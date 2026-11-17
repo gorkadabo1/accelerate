@@ -632,33 +632,41 @@ class DataLoaderTester(AccelerateTestCase):
         assert resumed.remainder == -1
 
     def test_gather_for_metrics_with_subset_sampler(self):
-        # Regression for #4410: the sampler selects fewer samples than the dataset contains.
-        accelerator = Accelerator(cpu=True)
-        sampler = SubsetRandomSampler(range(10), generator=torch.Generator().manual_seed(42))
-        dataloader = accelerator.prepare(DataLoader(range(21), batch_size=4, sampler=sampler))
+        class UnsizedSampler(SubsetRandomSampler):
+            def __len__(self):
+                raise NotImplementedError
 
-        samples = []
-        for batch in dataloader:
-            samples.extend(accelerator.gather_for_metrics(batch).tolist())
+        # An unsized sampler must keep the dataset-length fallback.
+        for sampler_type, dataset_size in ((SubsetRandomSampler, 21), (UnsizedSampler, 10)):
+            accelerator = Accelerator(cpu=True)
+            sampler = sampler_type(range(10), generator=torch.Generator().manual_seed(42))
+            dataloader = accelerator.prepare(DataLoader(range(dataset_size), batch_size=4, sampler=sampler))
 
-        assert sorted(samples) == list(range(10))
-        assert dataloader.remainder == 2
+            samples = []
+            for batch in dataloader:
+                samples.extend(accelerator.gather_for_metrics(batch).tolist())
+
+            assert sorted(samples) == list(range(10))
+            assert dataloader.remainder == 2
 
     def test_gather_for_metrics_with_changing_sampler_length(self):
         class GrowingSampler(SubsetRandomSampler):
             def set_epoch(self, epoch):
                 self.indices = range(5 + epoch)
 
-        accelerator = Accelerator(cpu=True)
-        dataloader = accelerator.prepare(DataLoader(range(21), batch_size=4, sampler=GrowingSampler(range(5))))
+        for nested_skip in (False, True):
+            accelerator = Accelerator(cpu=True)
+            dataloader = accelerator.prepare(DataLoader(range(21), batch_size=4, sampler=GrowingSampler(range(5))))
+            if nested_skip:
+                dataloader = skip_first_batches(skip_first_batches(dataloader, 0), 0)
 
-        for count in (5, 6):
-            samples = []
-            for batch in dataloader:
-                samples.extend(accelerator.gather_for_metrics(batch).tolist())
+            for count in (5, 6):
+                samples = []
+                for batch in dataloader:
+                    samples.extend(accelerator.gather_for_metrics(batch).tolist())
 
-            assert sorted(samples) == list(range(count))
-            assert dataloader.remainder == count % 4
+                assert sorted(samples) == list(range(count))
+                assert dataloader.remainder == count % 4
 
     def test_end_of_dataloader(self):
         dataloader = DataLoaderShard(list(range(16)), batch_size=4)

@@ -405,7 +405,7 @@ class DataLoaderStateMixin:
                     self.remainder = 0
                 else:
                     # Unsized samplers keep the dataset-length fallback.
-                    with suppress(TypeError):
+                    with suppress(TypeError, NotImplementedError):
                         length = len(getattr(batch_sampler, "sampler", None))
                     self.remainder = length % self.total_batch_size
         self.gradient_state._add_dataloader(self)
@@ -621,16 +621,20 @@ class DataLoaderShard(DataLoaderAdapter, DataLoaderStateMixin):
         # In case it is manually passed in, the user can set it to what they like
         if self.iteration != epoch:
             self.iteration = epoch
-        if hasattr(self.batch_sampler, "set_epoch"):
-            self.batch_sampler.set_epoch(epoch)
-        if hasattr(self.batch_sampler, "sampler") and hasattr(self.batch_sampler.sampler, "set_epoch"):
-            self.batch_sampler.sampler.set_epoch(epoch)
+        # SkipBatchSampler does not forward epoch initialization to its wrapped sampler.
+        batch_sampler = self.sampler if isinstance(self.sampler, BatchSampler) else self.batch_sampler
+        while isinstance(batch_sampler, SkipBatchSampler):
+            batch_sampler = batch_sampler.batch_sampler
+        if hasattr(batch_sampler, "set_epoch"):
+            batch_sampler.set_epoch(epoch)
+        if hasattr(batch_sampler, "sampler") and hasattr(batch_sampler.sampler, "set_epoch"):
+            batch_sampler.sampler.set_epoch(epoch)
         if (
-            hasattr(self.batch_sampler, "batch_sampler")
-            and hasattr(self.batch_sampler.batch_sampler, "sampler")
-            and hasattr(self.batch_sampler.batch_sampler.sampler, "set_epoch")
+            hasattr(batch_sampler, "batch_sampler")
+            and hasattr(batch_sampler.batch_sampler, "sampler")
+            and hasattr(batch_sampler.batch_sampler.sampler, "set_epoch")
         ):
-            self.batch_sampler.batch_sampler.sampler.set_epoch(epoch)
+            batch_sampler.batch_sampler.sampler.set_epoch(epoch)
         # We support if a custom `Dataset` implementation has `set_epoch`
         # or in general HF datasets `Datasets`
         elif hasattr(self.dataset, "set_epoch"):
